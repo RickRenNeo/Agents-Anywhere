@@ -2,12 +2,13 @@ from __future__ import annotations
 
 import json
 import sqlite3
+from collections.abc import Mapping
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
 
 from connector.logging import logger
 from connector.runtime_protocol.models import (
+    RuntimeStatus,
     SessionMeta,
     SessionSourceState,
     SessionState,
@@ -33,8 +34,9 @@ class AntigravitySessionReader:
         if not self.db_path.exists():
             return ()
 
+        con = None
         try:
-            con = sqlite3.connect(f"file:{self.db_path}?mode=ro", uri=True)
+            con = sqlite3.connect(self.db_path.as_uri() + "?mode=ro", uri=True)
             con.row_factory = sqlite3.Row
             query = """
                 SELECT conversation_id, title, preview, last_modified_time, status, workspace_uris
@@ -44,7 +46,6 @@ class AntigravitySessionReader:
                 LIMIT ?
             """
             rows = con.execute(query, (limit,)).fetchall()
-            con.close()
 
             observed_at = datetime.now(timezone.utc).isoformat()
             sessions: list[SessionMeta] = []
@@ -53,13 +54,19 @@ class AntigravitySessionReader:
                 title = row["title"] or "Untitled Conversation"
                 mod_time = row["last_modified_time"]
                 status_raw = row["status"] or ""
-                status_str = "running" if status_raw == "CASCADE_RUN_STATUS_RUNNING" else "idle"
+                status_str: RuntimeStatus = (
+                    "running" if status_raw == "CASCADE_RUN_STATUS_RUNNING" else "idle"
+                )
 
                 cwd: str | None = None
                 ws = row["workspace_uris"]
                 if ws:
                     try:
-                        uris = json.loads(ws) if isinstance(ws, str) and ws.startswith("[") else [ws]
+                        uris = (
+                            json.loads(ws)
+                            if isinstance(ws, str) and ws.startswith("[")
+                            else [ws]
+                        )
                         if uris and isinstance(uris[0], str) and uris[0].startswith("file://"):
                             cwd = uris[0][7:]
                     except Exception:
@@ -92,32 +99,46 @@ class AntigravitySessionReader:
         except Exception as e:
             logger.error(f"[Antigravity] Failed to list sessions: {e}")
             return ()
+        finally:
+            if con is not None:
+                con.close()
 
     def get_session_state(
         self,
         session_id: str,
         external_session_id: str | None = None,
+        selections: Mapping[str, str | None] | None = None,
+        default_model: str = "flash",
     ) -> SessionState:
         cid = external_session_id or session_id
+        effective_selections = (
+            dict(selections)
+            if selections is not None
+            else {
+                "model": protocol_selection_id(
+                    "antigravity", "model", {"model_id": default_model}
+                )
+            }
+        )
         if not self.db_path.exists():
             return SessionState(
                 session_id=session_id,
                 external_session_id=cid,
                 runtime="antigravity",
                 status="idle",
-                selections={"model": DEFAULT_MODEL_SELECTION},
+                selections=effective_selections,
             )
 
+        con = None
         try:
-            con = sqlite3.connect(f"file:{self.db_path}?mode=ro", uri=True)
+            con = sqlite3.connect(self.db_path.as_uri() + "?mode=ro", uri=True)
             con.row_factory = sqlite3.Row
             row = con.execute(
                 "SELECT status, preview FROM conversation_summaries WHERE conversation_id = ?",
                 (cid,),
             ).fetchone()
-            con.close()
 
-            status_str = "idle"
+            status_str: RuntimeStatus = "idle"
             if row and row["status"] == "CASCADE_RUN_STATUS_RUNNING":
                 status_str = "running"
 
@@ -126,7 +147,7 @@ class AntigravitySessionReader:
                 external_session_id=cid,
                 runtime="antigravity",
                 status=status_str,
-                selections={"model": DEFAULT_MODEL_SELECTION},
+                selections=effective_selections,
                 metadata={"preview": row["preview"] if row else ""},
             )
         except Exception as e:
@@ -136,5 +157,9 @@ class AntigravitySessionReader:
                 external_session_id=cid,
                 runtime="antigravity",
                 status="idle",
-                selections={"model": DEFAULT_MODEL_SELECTION},
+                selections=effective_selections,
             )
+        finally:
+            if con is not None:
+                con.close()
+

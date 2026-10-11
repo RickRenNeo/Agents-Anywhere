@@ -11,6 +11,8 @@ from connector.runtime_protocol import (
     RuntimeCapabilitySet,
 )
 
+from connector.runtimes.custom_models import custom_models_schema
+
 DEFAULT_GEMINI_DIR = Path.home() / ".gemini"
 DEFAULT_ANTIGRAVITY_DIR = DEFAULT_GEMINI_DIR / "antigravity"
 DEFAULT_AGENTAPI_PATH = DEFAULT_ANTIGRAVITY_DIR / "bin" / "agentapi"
@@ -43,17 +45,10 @@ def antigravity_config_schema() -> dict[str, Any]:
                     "flash",
                     "pro",
                     "flash_lite",
-                    "gemini-3.8-flash",
-                    "gemini-3.7-flash",
-                    "gemini-3.6-flash",
-                    "gemini-3.1-pro",
-                    "claude-sonnet-4-6",
-                    "claude-opus-4-6",
-                    "claude-haiku-4-5",
-                    "gpt-oss-120b",
                 ],
                 "default": "flash",
             },
+            "customModels": custom_models_schema(),
         },
         "additionalProperties": True,
     }

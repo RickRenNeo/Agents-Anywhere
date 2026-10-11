@@ -9,15 +9,24 @@ from connector.runtime_protocol import (
     RuntimeConfig,
     RuntimeConfigSchema,
     RuntimeInstancePolicy,
+    RuntimeInvalidRequestError,
     RuntimeProvider,
     RuntimeTypeDescriptor,
 )
 from connector.runtime_protocol.host import RuntimeHostClient
 from connector.runtimes.antigravity import discovery, provider_config
 from connector.runtimes.antigravity.runtime import AntigravityRuntime
+from connector.runtimes.custom_models import normalize_custom_models
 
 
 class AntigravityProvider(RuntimeProvider):
+    def __init__(
+        self,
+        *,
+        checker: Any | None = None,
+    ) -> None:
+        self._checker = checker or discovery.check_antigravity_installed
+
     @property
     def runtime(self) -> str:
         return "antigravity"
@@ -43,7 +52,7 @@ class AntigravityProvider(RuntimeProvider):
         return 1
 
     async def discover(self) -> RuntimeTypeDescriptor:
-        check = discovery.check_antigravity_installed()
+        check = self._checker()
         return RuntimeTypeDescriptor(
             runtime_type=self.runtime_type,
             display_name=self.display_name,
@@ -99,13 +108,20 @@ class AntigravityProvider(RuntimeProvider):
         normalized = dict(values)
         if "defaultModel" not in normalized:
             normalized["defaultModel"] = "flash"
+        default_model = normalized["defaultModel"]
+        if default_model not in ("flash", "pro", "flash_lite"):
+            raise RuntimeInvalidRequestError(
+                f"Invalid defaultModel: {default_model}. Must be one of: flash, pro, flash_lite"
+            )
+        if "customModels" in normalized and normalized["customModels"] is not None:
+            normalized["customModels"] = normalize_custom_models(normalized["customModels"])
         schema = (await self.get_config_schema()).schema
         return RuntimeConfig(
             runtime=self.runtime,
             revision=1,
             values=normalized,
             schema=schema,
-            metadata=discovery.check_antigravity_installed(),
+            metadata=self._checker(),
         )
 
     async def create_runtime(

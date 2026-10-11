@@ -56,24 +56,58 @@ def find_antigravity_ls() -> tuple[int | None, str | None, str | None]:
 
 
 def find_antigravity_project_id(
-    cwd: str | None = None, conversation_id: str | None = None
+    cwd: str | None = None,
+    conversation_id: str | None = None,
+    db_path: Path | None = None,
 ) -> tuple[str | None, str | None]:
     """Find active project_id and project_dir from database or environment.
 
     Returns (project_id, project_dir)
     """
     env_proj = os.environ.get("ANTIGRAVITY_PROJECT_ID")
+    target_db = db_path or DEFAULT_DB_PATH
 
-    if DEFAULT_DB_PATH.exists():
+    if target_db.exists():
         try:
-            con = sqlite3.connect(f"file:{DEFAULT_DB_PATH}?mode=ro", uri=True)
-            if conversation_id:
+            con = sqlite3.connect(f"{target_db.as_uri()}?mode=ro", uri=True)
+            try:
+                if conversation_id:
+                    row = con.execute(
+                        "SELECT project_id, workspace_uris FROM conversation_summaries WHERE conversation_id = ?",
+                        (conversation_id,),
+                    ).fetchone()
+                    if row and row[0] and row[0] != "outside-of-project":
+                        pdir = None
+                        if row[1]:
+                            try:
+                                uris = json.loads(row[1])
+                                if uris and isinstance(uris, list) and uris[0].startswith("file://"):
+                                    pdir = uris[0][7:]
+                            except Exception:
+                                pass
+                        return env_proj or row[0], pdir
+
+                if cwd:
+                    target_uri = f"file://{Path(cwd).resolve()}"
+                    row = con.execute(
+                        "SELECT project_id, workspace_uris FROM conversation_summaries WHERE workspace_uris LIKE ? AND project_id != '' AND project_id != 'outside-of-project' ORDER BY last_modified_time DESC LIMIT 1",
+                        (f"%{target_uri}%",),
+                    ).fetchone()
+                    if row and row[0]:
+                        pdir = None
+                        if row[1]:
+                            try:
+                                uris = json.loads(row[1])
+                                if uris and isinstance(uris, list) and uris[0].startswith("file://"):
+                                    pdir = uris[0][7:]
+                            except Exception:
+                                pass
+                        return env_proj or row[0], pdir or str(Path(cwd).resolve())
+
                 row = con.execute(
-                    "SELECT project_id, workspace_uris FROM conversation_summaries WHERE conversation_id = ?",
-                    (conversation_id,),
+                    "SELECT project_id, workspace_uris FROM conversation_summaries WHERE project_id != '' AND project_id != 'outside-of-project' ORDER BY last_modified_time DESC LIMIT 1"
                 ).fetchone()
-                if row and row[0] and row[0] != "outside-of-project":
-                    con.close()
+                if row and row[0]:
                     pdir = None
                     if row[1]:
                         try:
@@ -83,39 +117,8 @@ def find_antigravity_project_id(
                         except Exception:
                             pass
                     return env_proj or row[0], pdir
-
-            if cwd:
-                target_uri = f"file://{Path(cwd).resolve()}"
-                row = con.execute(
-                    "SELECT project_id, workspace_uris FROM conversation_summaries WHERE workspace_uris LIKE ? AND project_id != '' AND project_id != 'outside-of-project' ORDER BY last_modified_time DESC LIMIT 1",
-                    (f"%{target_uri}%",),
-                ).fetchone()
-                if row and row[0]:
-                    con.close()
-                    pdir = None
-                    if row[1]:
-                        try:
-                            uris = json.loads(row[1])
-                            if uris and isinstance(uris, list) and uris[0].startswith("file://"):
-                                pdir = uris[0][7:]
-                        except Exception:
-                            pass
-                    return env_proj or row[0], pdir or str(Path(cwd).resolve())
-
-            row = con.execute(
-                "SELECT project_id, workspace_uris FROM conversation_summaries WHERE project_id != '' AND project_id != 'outside-of-project' ORDER BY last_modified_time DESC LIMIT 1"
-            ).fetchone()
-            con.close()
-            if row and row[0]:
-                pdir = None
-                if row[1]:
-                    try:
-                        uris = json.loads(row[1])
-                        if uris and isinstance(uris, list) and uris[0].startswith("file://"):
-                            pdir = uris[0][7:]
-                    except Exception:
-                        pass
-                return env_proj or row[0], pdir
+            finally:
+                con.close()
         except Exception as e:
             logger.warning(f"[Antigravity] Failed to query project_id from db: {e}")
 
@@ -141,10 +144,15 @@ def get_antigravity_env(
     return env, effective_cwd
 
 
-def check_antigravity_installed() -> dict[str, Any]:
+def check_antigravity_installed(
+    agentapi_path: Path | None = None,
+    db_path: Path | None = None,
+) -> dict[str, Any]:
     """Check local installation and running status."""
-    agentapi_exists = DEFAULT_AGENTAPI_PATH.exists()
-    db_exists = DEFAULT_DB_PATH.exists()
+    target_agentapi = agentapi_path or DEFAULT_AGENTAPI_PATH
+    target_db = db_path or DEFAULT_DB_PATH
+    agentapi_exists = target_agentapi.exists()
+    db_exists = target_db.exists()
     pid, csrf, ls_addr = find_antigravity_ls()
     is_running = pid is not None and ls_addr is not None
 
@@ -153,6 +161,6 @@ def check_antigravity_installed() -> dict[str, Any]:
         "running": is_running,
         "pid": pid,
         "ls_address": ls_addr,
-        "agentapi_path": str(DEFAULT_AGENTAPI_PATH),
-        "db_path": str(DEFAULT_DB_PATH),
+        "agentapi_path": str(target_agentapi),
+        "db_path": str(target_db),
     }
